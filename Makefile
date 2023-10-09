@@ -8,5 +8,11 @@ bin:
 	cd ./build && ./main
 
 
+db:
+	go build -o ./build/db_test ./cmd/db.go
+	@chmod +x ./build/db_test
+	cd ./build && ./db_test
+
+
 models:
 	protoc --go_out=. ./proto/*
