@@ -1,0 +1,6 @@
+[submodule "modules/go-libp2p-raft"]
+	path = modules/go-libp2p-raft
+	url = https://github.com/Mihalic2040/go-libp2p-raft.git
+[submodule "modules/raft"]
+	path = modules/raft
+	url = https://github.com/Mihalic2040/go-libp2p-raft.git
