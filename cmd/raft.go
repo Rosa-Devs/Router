@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -23,24 +24,42 @@ var datastore = "testing_datastore"
 var raftQuiet = true
 
 // Define a struct for key-value pairs
+// type KeyValue struct {
+// 	Id   string `json:"Id"`
+// 	Data string `json:"Data"`
+// }
+
 type KeyValue struct {
-	Id   string `json:"Id"`
-	Data string `json:"Data"`
+	Data map[string]string `json:"Data"`
 }
 
 type RaftState struct {
 	KeyValueMap map[string]string
 }
 
-// Modify testOperation to handle key-value operations
-type testOperation struct {
-	Id   string `json:"Id"`
-	Data string `json:"Data"`
-}
+// func (o testOperation) ApplyTo(s consensus.State) (consensus.State, error) {
+// 	raftSt := s.(*RaftState)
 
-func (o testOperation) ApplyTo(s consensus.State) (consensus.State, error) {
+// 	// Check if the key already exists in the state
+// 	if existingData, ok := raftSt.KeyValueMap[o.Id]; ok {
+// 		// If the key exists, append the new data to the existing data
+// 		raftSt.KeyValueMap[o.Id] = existingData + o.Data
+// 	} else {
+// 		// If the key does not exist, create a new entry with the provided data
+// 		raftSt.KeyValueMap[o.Id] = o.Data
+// 	}
+
+// 	return raftSt, nil
+// }
+
+func (o KeyValue) ApplyTo(s consensus.State) (consensus.State, error) {
 	raftSt := s.(*RaftState)
-	raftSt.KeyValueMap[o.Id] = o.Data
+
+	// Update the KeyValueMap with the new data
+	for key, value := range o.Data {
+		raftSt.KeyValueMap[key] = value
+	}
+
 	return &raftSt, nil
 }
 
@@ -87,8 +106,6 @@ func shutdown(t *testing.T, r *raft.Raft) {
 	}
 }
 
-// Create a quick raft instance
-
 func main() {
 	// This example shows how to use go-libp2p-raft to create a cluster
 	// which agrees on a State. In order to do it, it defines a state,
@@ -129,9 +146,13 @@ func main() {
 	// Note that state is just used for local initialization, and that,
 	// only states submitted via CommitState() alters the state of the
 	// cluster.
-	consensus1 := raftlib.NewConsensus(&RaftState{})
-	consensus2 := raftlib.NewConsensus(&RaftState{})
-	consensus3 := raftlib.NewConsensus(&RaftState{})
+	consensus1 := raftlib.NewConsensus(&KeyValue{
+		// Data: map[string]string{
+		// 	"1": "test",
+		// },
+	})
+	consensus2 := raftlib.NewConsensus(&KeyValue{})
+	consensus3 := raftlib.NewConsensus(&KeyValue{})
 
 	// Create LibP2P transports Raft
 	transport1, err := raftlib.NewLibp2pTransport(peer1, time.Minute)
@@ -226,7 +247,7 @@ func main() {
 	consensus3.SetActor(actor3)
 
 	//WAIT FOR LEADER
-	time.Sleep(5 * time.Second)
+	//time.Sleep(5 * time.Second)
 
 	http.HandleFunc("/get/", func(w http.ResponseWriter, r *http.Request) {
 		// Extract key from URL path
@@ -237,21 +258,40 @@ func main() {
 		}
 
 		// Retrieve the value from the Raft state
-		state, err := consensus1.GetCurrentState()
+		state, err := consensus3.GetCurrentState()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		raftState := state.(*RaftState)
-		value, ok := raftState.KeyValueMap[key]
+		raftState, ok := state.(*KeyValue)
 		if !ok {
+			http.Error(w, "Invalid Raft state type", http.StatusInternalServerError)
+			return
+		}
+
+		// Retrieve the value for the given key
+		value, exists := raftState.Data[key]
+		if !exists {
 			http.Error(w, "Key not found", http.StatusNotFound)
 			return
 		}
 
-		// Return the value as the API response
+		// Prepare the response as JSON
+		response := map[string]string{
+			"key":   key,
+			"value": value,
+		}
+
+		// Marshal the response to JSON
+		jsonData, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Error processing JSON", http.StatusInternalServerError)
+			return
+		}
+
+		// Return JSON response
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"key":"%s","value":"%s"}`, key, value)
+		w.Write(jsonData)
 	})
 
 	http.HandleFunc("/set", func(w http.ResponseWriter, r *http.Request) {
@@ -262,24 +302,22 @@ func main() {
 			return
 		}
 
-		// Create and apply the operation to set the key-value pair
-		// operation := testOperation{
-		// 	Id:   key,
-		// 	Data: value,
-		// }
-		newState := &testOperation{
-			Id:   key,
-			Data: value,
+		// Create and apply the operation to set the key-value pairs
+		newState := KeyValue{
+			Data: map[string]string{
+				key: value,
+			},
 		}
 
 		log.Println("WRITING STATE:", newState)
 		var err error
+		var aggred_state consensus.State
 		if actor1.IsLeader() {
-			_, err = consensus1.CommitState(newState)
+			aggred_state, err = consensus1.CommitState(newState)
 		} else if actor2.IsLeader() {
-			_, err = consensus2.CommitState(newState)
+			aggred_state, err = consensus2.CommitState(newState)
 		} else if actor3.IsLeader() {
-			_, err = consensus3.CommitState(newState)
+			aggred_state, err = consensus3.CommitState(newState)
 		}
 		if err != nil {
 			//leader_id, err := actor1.Leader()
@@ -289,10 +327,17 @@ func main() {
 			http.Error(w, "Err ftw? "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if aggred_state == nil {
+			fmt.Println("agreedState is nil: commited on a non-leader?")
+			http.Error(w, "agreedState is nil: commited on a non-leader?", http.StatusInternalServerError)
+			return
+		}
+		agreedRaftState := aggred_state.(*KeyValue)
+		log.Println("[STATE]", agreedRaftState.Data)
 
 		// Return success as the API response
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, key+": "+value)
+		fmt.Fprintf(w, `{"Key": %q, "Value": %q}`, key, value)
 	})
 
 	log.Println("Server waiting on http://localhost:8080")

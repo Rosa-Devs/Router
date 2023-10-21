@@ -15,7 +15,7 @@ import (
 func main() {
 	cfg := types.Config{
 		DatabasePath: "db",
-	}
+	} 
 
 	// !! GLOBAl DB MANAGER !!
 	//CREATE DATABSE INSTANCE
